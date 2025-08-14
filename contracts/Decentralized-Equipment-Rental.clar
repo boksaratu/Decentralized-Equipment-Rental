@@ -9,10 +9,15 @@
 (define-constant ERR-ALREADY-REVIEWED (err u107))
 (define-constant ERR-INVALID-RATING (err u108))
 (define-constant ERR-NOT-RENTED-BY-USER (err u109))
+(define-constant ERR-INSUFFICIENT-DEPOSIT (err u110))
+(define-constant ERR-DEPOSIT-ALREADY-CLAIMED (err u111))
+(define-constant ERR-NO-DEPOSIT-FOUND (err u112))
+(define-constant ERR-STILL-RENTED (err u113))
 
 ;; Data variables
 (define-data-var contract-owner principal tx-sender)
 (define-data-var late-fee-rate uint u10)
+(define-data-var deposit-percentage uint u50)
 
 ;; Maps
 (define-map equipment-listings
@@ -65,6 +70,16 @@
   { has-rented: bool }
 )
 
+(define-map security-deposits
+  { equipment-id: uint, renter: principal }
+  {
+    amount: uint,
+    deposited-at: uint,
+    claimed: bool,
+    refunded: bool
+  }
+)
+
 ;; Public functions
 (define-public (list-equipment (equipment-id uint) (name (string-ascii 50)) (daily-rate uint))
   (let ((listing (map-get? equipment-listings { equipment-id: equipment-id })))
@@ -85,10 +100,21 @@
   (let (
     (listing (unwrap! (map-get? equipment-listings { equipment-id: equipment-id }) ERR-NOT-LISTED))
     (total-cost (* (get daily-rate listing) days))
+    (deposit-amount (/ (* (get daily-rate listing) days (var-get deposit-percentage)) u100))
+    (total-payment (+ total-cost deposit-amount))
     (current-height stacks-block-height)
   )
     (asserts! (get available listing) ERR-NOT-AVAILABLE)
-    (try! (stx-transfer? total-cost tx-sender (get owner listing)))
+    (try! (stx-transfer? total-payment tx-sender (get owner listing)))
+    
+    (map-set security-deposits
+      { equipment-id: equipment-id, renter: tx-sender }
+      {
+        amount: deposit-amount,
+        deposited-at: current-height,
+        claimed: false,
+        refunded: false
+      })
     
     (map-set equipment-listings
       { equipment-id: equipment-id }
@@ -155,6 +181,44 @@
   (begin
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
     (var-set late-fee-rate new-rate)
+    (ok true)))
+
+(define-public (set-deposit-percentage (new-percentage uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+    (var-set deposit-percentage new-percentage)
+    (ok true)))
+
+(define-public (refund-deposit (equipment-id uint) (renter principal))
+  (let (
+    (listing (unwrap! (map-get? equipment-listings { equipment-id: equipment-id }) ERR-NOT-LISTED))
+    (deposit (unwrap! (map-get? security-deposits { equipment-id: equipment-id, renter: renter }) ERR-NO-DEPOSIT-FOUND))
+    (deposit-amount (get amount deposit))
+  )
+    (asserts! (is-eq tx-sender (get owner listing)) ERR-NOT-AUTHORIZED)
+    (asserts! (not (get refunded deposit)) ERR-DEPOSIT-ALREADY-CLAIMED)
+    (asserts! (not (get claimed deposit)) ERR-DEPOSIT-ALREADY-CLAIMED)
+    (asserts! (get available listing) ERR-STILL-RENTED)
+    
+    (try! (stx-transfer? deposit-amount (get owner listing) renter))
+    
+    (map-set security-deposits
+      { equipment-id: equipment-id, renter: renter }
+      (merge deposit { refunded: true }))
+    (ok true)))
+
+(define-public (claim-deposit (equipment-id uint) (renter principal))
+  (let (
+    (listing (unwrap! (map-get? equipment-listings { equipment-id: equipment-id }) ERR-NOT-LISTED))
+    (deposit (unwrap! (map-get? security-deposits { equipment-id: equipment-id, renter: renter }) ERR-NO-DEPOSIT-FOUND))
+  )
+    (asserts! (is-eq tx-sender (get owner listing)) ERR-NOT-AUTHORIZED)
+    (asserts! (not (get claimed deposit)) ERR-DEPOSIT-ALREADY-CLAIMED)
+    (asserts! (not (get refunded deposit)) ERR-DEPOSIT-ALREADY-CLAIMED)
+    
+    (map-set security-deposits
+      { equipment-id: equipment-id, renter: renter }
+      (merge deposit { claimed: true }))
     (ok true)))
 
 (define-public (submit-review (equipment-id uint) (rating uint) (review-text (string-ascii 200)))
@@ -260,3 +324,16 @@
     (existing-review (map-get? equipment-reviews { equipment-id: equipment-id, reviewer: reviewer }))
   )
     (and (is-some rental-record) (is-none existing-review))))
+
+(define-read-only (get-security-deposit (equipment-id uint) (renter principal))
+  (map-get? security-deposits { equipment-id: equipment-id, renter: renter }))
+
+(define-read-only (calculate-deposit-amount (equipment-id uint) (days uint))
+  (let ((listing (map-get? equipment-listings { equipment-id: equipment-id })))
+    (match listing
+      equipment-data
+        (/ (* (get daily-rate equipment-data) days (var-get deposit-percentage)) u100)
+      u0)))
+
+(define-read-only (get-deposit-percentage)
+  (var-get deposit-percentage))
