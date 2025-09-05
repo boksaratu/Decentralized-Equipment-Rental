@@ -13,6 +13,9 @@
 (define-constant ERR-DEPOSIT-ALREADY-CLAIMED (err u111))
 (define-constant ERR-NO-DEPOSIT-FOUND (err u112))
 (define-constant ERR-STILL-RENTED (err u113))
+(define-constant ERR-MAINTENANCE-ACTIVE (err u114))
+(define-constant ERR-MAINTENANCE-NOT-FOUND (err u115))
+(define-constant ERR-MAINTENANCE-ALREADY-COMPLETED (err u116))
 
 ;; Data variables
 (define-data-var contract-owner principal tx-sender)
@@ -80,6 +83,23 @@
   }
 )
 
+(define-map maintenance-records
+  { equipment-id: uint, maintenance-id: uint }
+  {
+    owner: principal,
+    start-block: uint,
+    end-block: uint,
+    maintenance-type: (string-ascii 100),
+    completed: bool,
+    cost: uint
+  }
+)
+
+(define-map equipment-maintenance-counter
+  { equipment-id: uint }
+  { next-maintenance-id: uint }
+)
+
 ;; Public functions
 (define-public (list-equipment (equipment-id uint) (name (string-ascii 50)) (daily-rate uint))
   (let ((listing (map-get? equipment-listings { equipment-id: equipment-id })))
@@ -105,6 +125,7 @@
     (current-height stacks-block-height)
   )
     (asserts! (get available listing) ERR-NOT-AVAILABLE)
+    (asserts! (not (is-equipment-under-maintenance equipment-id)) ERR-MAINTENANCE-ACTIVE)
     (try! (stx-transfer? total-payment tx-sender (get owner listing)))
     
     (map-set security-deposits
@@ -272,6 +293,50 @@
         }))
     (ok true)))
 
+(define-public (schedule-maintenance (equipment-id uint) (start-block uint) (end-block uint) (maintenance-type (string-ascii 100)) (cost uint))
+  (let (
+    (listing (unwrap! (map-get? equipment-listings { equipment-id: equipment-id }) ERR-NOT-LISTED))
+    (counter (default-to { next-maintenance-id: u1 } 
+      (map-get? equipment-maintenance-counter { equipment-id: equipment-id })))
+    (maintenance-id (get next-maintenance-id counter))
+    (current-height stacks-block-height)
+  )
+    (asserts! (is-eq tx-sender (get owner listing)) ERR-NOT-AUTHORIZED)
+    (asserts! (> start-block current-height) ERR-NOT-AUTHORIZED)
+    (asserts! (> end-block start-block) ERR-NOT-AUTHORIZED)
+    (asserts! (get available listing) ERR-NOT-AVAILABLE)
+    
+    (map-set maintenance-records
+      { equipment-id: equipment-id, maintenance-id: maintenance-id }
+      {
+        owner: tx-sender,
+        start-block: start-block,
+        end-block: end-block,
+        maintenance-type: maintenance-type,
+        completed: false,
+        cost: cost
+      })
+    
+    (map-set equipment-maintenance-counter
+      { equipment-id: equipment-id }
+      { next-maintenance-id: (+ maintenance-id u1) })
+    
+    (ok maintenance-id)))
+
+(define-public (complete-maintenance (equipment-id uint) (maintenance-id uint))
+  (let (
+    (listing (unwrap! (map-get? equipment-listings { equipment-id: equipment-id }) ERR-NOT-LISTED))
+    (maintenance (unwrap! (map-get? maintenance-records { equipment-id: equipment-id, maintenance-id: maintenance-id }) ERR-MAINTENANCE-NOT-FOUND))
+  )
+    (asserts! (is-eq tx-sender (get owner listing)) ERR-NOT-AUTHORIZED)
+    (asserts! (not (get completed maintenance)) ERR-MAINTENANCE-ALREADY-COMPLETED)
+    
+    (map-set maintenance-records
+      { equipment-id: equipment-id, maintenance-id: maintenance-id }
+      (merge maintenance { completed: true }))
+    
+    (ok true)))
+
 ;; Read-only functions
 (define-read-only (get-equipment (equipment-id uint))
   (map-get? equipment-listings { equipment-id: equipment-id }))
@@ -337,3 +402,35 @@
 
 (define-read-only (get-deposit-percentage)
   (var-get deposit-percentage))
+
+(define-read-only (get-maintenance-record (equipment-id uint) (maintenance-id uint))
+  (map-get? maintenance-records { equipment-id: equipment-id, maintenance-id: maintenance-id }))
+
+(define-read-only (is-equipment-under-maintenance (equipment-id uint))
+  (let (
+    (current-height stacks-block-height)
+    (counter (map-get? equipment-maintenance-counter { equipment-id: equipment-id }))
+  )
+    (match counter
+      counter-data
+        (let ((max-id (get next-maintenance-id counter-data)))
+          (get under-maintenance (fold check-maintenance-window (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10) 
+            { equipment-id: equipment-id, current-height: current-height, max-id: max-id, under-maintenance: false })))
+      false)))
+
+(define-private (check-maintenance-window (maintenance-id uint) (state { equipment-id: uint, current-height: uint, max-id: uint, under-maintenance: bool }))
+  (if (or (get under-maintenance state) (>= maintenance-id (get max-id state)))
+    state
+    (let (
+      (maintenance (map-get? maintenance-records 
+        { equipment-id: (get equipment-id state), maintenance-id: maintenance-id }))
+    )
+      (match maintenance
+        maintenance-data
+          (if (and 
+                (not (get completed maintenance-data))
+                (>= (get current-height state) (get start-block maintenance-data))
+                (< (get current-height state) (get end-block maintenance-data)))
+            (merge state { under-maintenance: true })
+            state)
+        state))))
