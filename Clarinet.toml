@@ -9,6 +9,10 @@ requirements = []
 path = 'contracts/Decentralized-Equipment-Rental.clar'
 clarity_version = 3
 epoch = 3.1
+[contracts.Equipment-Availability-Calendar]
+path = 'contracts/Equipment-Availability-Calendar.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
