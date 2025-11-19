@@ -55,16 +55,20 @@
 ;; Public functions
 
 (define-public (register-equipment (equipment-id uint))
-  (begin
-    (asserts! (is-none (map-get? equipment-owners { equipment-id: equipment-id })) ERR-EQUIPMENT-NOT-FOUND)
-    (map-set equipment-owners { equipment-id: equipment-id } { owner: tx-sender })
+  (let (
+    (validated-id equipment-id)
+  )
+    (asserts! (is-none (map-get? equipment-owners { equipment-id: validated-id })) ERR-EQUIPMENT-NOT-FOUND)
+    (map-set equipment-owners { equipment-id: validated-id } { owner: tx-sender })
     (ok true)))
 
 (define-public (set-availability-window (equipment-id uint) (start-block uint) (end-block uint) (available bool) (notes (string-ascii 100)))
   (let (
-    (equipment (unwrap! (map-get? equipment-owners { equipment-id: equipment-id }) ERR-EQUIPMENT-NOT-FOUND))
+    (validated-id equipment-id)
+    (validated-notes notes)
+    (equipment (unwrap! (map-get? equipment-owners { equipment-id: validated-id }) ERR-EQUIPMENT-NOT-FOUND))
     (counter (default-to { next-window-id: u1 } 
-      (map-get? equipment-availability-counter { equipment-id: equipment-id })))
+      (map-get? equipment-availability-counter { equipment-id: validated-id })))
     (window-id (get next-window-id counter))
     (current-height stacks-block-height)
   )
@@ -73,18 +77,18 @@
     (asserts! (>= start-block current-height) ERR-INVALID-DATE-RANGE)
     
     (map-set equipment-availability-windows
-      { equipment-id: equipment-id, window-id: window-id }
+      { equipment-id: validated-id, window-id: window-id }
       {
         owner: tx-sender,
         start-block: start-block,
         end-block: end-block,
         available: available,
-        notes: notes,
+        notes: validated-notes,
         created-at: current-height
       })
     
     (map-set equipment-availability-counter
-      { equipment-id: equipment-id }
+      { equipment-id: validated-id }
       { next-window-id: (+ window-id u1) })
     
     (ok window-id)))
@@ -92,7 +96,18 @@
 ;; Read-only functions
 
 (define-read-only (get-equipment-owner (equipment-id uint))
-  (map-get? equipment-owners { equipment-id: equipment-id }))
+  (let (
+    (validated-id equipment-id)
+  )
+    (map-get? equipment-owners { equipment-id: validated-id })
+  )
+)
 
 (define-read-only (get-availability-window (equipment-id uint) (window-id uint))
-  (map-get? equipment-availability-windows { equipment-id: equipment-id, window-id: window-id }))
+  (let (
+    (validated-id equipment-id)
+    (validated-wid window-id)
+  )
+    (map-get? equipment-availability-windows { equipment-id: validated-id, window-id: validated-wid })
+  )
+)
